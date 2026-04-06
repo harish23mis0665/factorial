@@ -1,0 +1,110 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_IMAGE = 'factorial-app:latest'
+        DOCKER_REPO = 'yourusername/factorial-app'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo 'Code checked out successfully'
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                script {
+                    echo 'Building Maven project...'
+                    sh 'mvn clean compile -DskipTests'
+                }
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                script {
+                    echo 'Running JUnit tests...'
+                    sh 'mvn test'
+                    junit 'target/surefire-reports/*.xml'
+                }
+                post {
+                    always {
+                        publishHTML([
+                            allowMissing: false,
+                            alwaysLinkToLastBuild: true,
+                            keepAll: true,
+                            reportDir: 'target/site/junit',
+                            reportFiles: 'index.html',
+                            reportName: 'JUnit Test Report'
+                        ])
+                    }
+                }
+            }
+        }
+        
+        stage('Package') {
+            steps {
+                script {
+                    echo 'Packaging application...'
+                    sh 'mvn package -DskipTests'
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo 'Building Docker image...'
+                    def image = docker.build("${DOCKER_IMAGE}")
+                    echo "Docker image built: ${image.id}"
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo 'Pushing Docker image to registry...'
+                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                        docker.image("${DOCKER_REPO}:${env.BUILD_NUMBER}").push()
+                        docker.image("${DOCKER_REPO}:latest").push()
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+                script {
+                    echo 'Deploying application...'
+                    sh """
+                        docker stop factorial-app || true
+                        docker rm factorial-app || true
+                        docker run -d --name factorial-app -p 8080:8080 ${DOCKER_IMAGE}
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Pipeline completed!'
+            cleanWs()
+        }
+        success {
+            echo 'Build succeeded! 🎉'
+            slackSend(channel: '#ci-cd', message: "SUCCESS: Job `${env.JOB_NAME}` #${env.BUILD_NUMBER} (<${env.BUILD_URL}|Open>)")
+        }
+        failure {
+            echo 'Build failed! 💥'
+            slackSend(channel: '#ci-cd', message: "FAILED: Job `${env.JOB_NAME}` #${env.BUILD_NUMBER} (<${env.BUILD_URL}|Open>)")
+        }
+    }
+}
